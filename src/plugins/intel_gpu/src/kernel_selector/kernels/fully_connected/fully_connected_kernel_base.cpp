@@ -30,6 +30,10 @@ JitConstants FullyConnectedKernelBase::GetJitConstants(const fully_connected_par
             jit.AddConstants({MakeJitConstant("COMPRESSED_WEIGHTS_INT4", 1)});
         }
 
+        if (params.weights.GetDType() == WeightsType::UINT2) {
+            jit.AddConstant(MakeJitConstant("COMPRESSED_WEIGHTS_INT2", 1));
+        }
+
         const size_t scale_groups_num = params.decompression_scale.Feature().v;
         const size_t scale_group_size = params.weights.IFM().v / params.decompression_scale.Feature().v;
         jit.AddConstants({MakeJitConstant("DECOMPRESSION_SCALE_TERM", 1)});

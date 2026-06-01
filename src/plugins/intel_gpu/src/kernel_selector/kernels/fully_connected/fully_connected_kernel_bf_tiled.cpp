@@ -280,6 +280,7 @@ ParamsKey FullyConnected_bf_tiled::GetSupportedKey() const {
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
     k.EnableInputWeightsType(WeightsType::UINT4);
+    k.EnableInputWeightsType(WeightsType::UINT2);
     k.EnableInputWeightsType(WeightsType::INT4);
     k.EnableInputWeightsType(WeightsType::UINT8);
     k.EnableInputWeightsType(WeightsType::INT8);
@@ -351,6 +352,10 @@ bool FullyConnected_bf_tiled::Validate(const Params& params) const {
 
     auto wt = weights.GetDType();
     if ((wt == WeightsType::UINT4 || wt == WeightsType::INT4) && (weights.IFM().v % 2 != 0)) {
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
+
+    if (wt == WeightsType::UINT2 && (weights.IFM().v % 4 != 0)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
 
@@ -491,7 +496,7 @@ FullyConnected_bf_tiled::GetAutoTuneParams(const fully_connected_params& params,
 
     bool swiglu_fused = is_swiglu_fused(params);
 
-    if (params.weights.GetDType() == WeightsType::UINT4 || params.weights.GetDType() == WeightsType::INT4 ||
+    if (params.weights.GetDType() == WeightsType::UINT4 || params.weights.GetDType() == WeightsType::INT4 || params.weights.GetDType() == WeightsType::UINT2 ||
         (is_weight_dyn_quantizable(params) && should_dynamic_quantize(params))) {
         // Only 4bit weight type is fully optimized to use SLM. In default kernel, SLM is not applied to 8bit weight.
         if (!params.is_shape_agnostic && batch == 1) {
@@ -691,6 +696,11 @@ JitConstants FullyConnected_bf_tiled::GetJitConstants(const fully_connected_para
         jit.Merge(make_int4_packed_type_jit_constant("INT4_PACKED_TYPE", weights_dt, tile_k_ofm));
         const size_t scale_group_size = get_scale_group_size(params);
         // Do not use SCALE_POST_OP for SLM kernel, since it demonstrates worse performance
+        if (scale_group_size % simd == 0 && !dispatchData.use_slm)
+            add_decompress_scale_post_op = true;
+    } else if (weights_dt == WeightsType::UINT2) {
+        tile_k_ofm_packed /= 4;  // 4 values per byte
+        const size_t scale_group_size = get_scale_group_size(params);
         if (scale_group_size % simd == 0 && !dispatchData.use_slm)
             add_decompress_scale_post_op = true;
     }
@@ -1030,24 +1040,29 @@ KernelsData FullyConnected_bf_tiled::GetTunedKernelsDataByIndex(const Params &pa
     auto output_f = get_output_aligned_bf_size(fc_params, false).second;
 
     WeightsLayout weights_layout = WeightsLayout::os_iyx_osv16;
+    if (fc_params.weights.GetDType() == WeightsType::UINT2) {
+        // Use default os_iyx_osv16 layout for now to avoid unsupported weight reorder
+        weights_layout = WeightsLayout::os_iyx_osv16;
+        // Skip all the INT4-specific layout optimization below
+    }
     if (is_swiglu_fused(fc_params)) {
         weights_layout = WeightsLayout::os_is_yx_osv32_isv2;
     } else if (fc_params.compressed && fc_params.inputs[0].GetDType() == Datatype::F16
         && (fc_params.weights.GetLayout() == WeightsLayout::oiyx || fc_params.weights.GetLayout() == WeightsLayout::os_is_yx_osv64_isv2)
-        && (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4)
+        && (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4 )
         && is_weight_horizontal(fc_params, output_f)) {
         // Large N + small K case (horizontal weight) to use [osv64_isv2] + TILE_OFM 4 for batch 1
         weights_layout = WeightsLayout::os_is_yx_osv64_isv2;
-    } else if (fc_params.compressed && fc_params.inputs[0].GetDType() == Datatype::F16
-        && (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4)
+    } else if (fc_params.compressed && fc_params.inputs[0].GetDType() == Datatype::F16 &&
+               (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4 )
         && (fc_params.weights.GetLayout() == WeightsLayout::oiyx || fc_params.weights.GetLayout() == WeightsLayout::os_iyx_osv16)
         && is_weight_vertical(fc_params, output_f)) {
         // Large K + Small N case (vertical weight)  to use [osv16 + TILE_K 4] + TILE_OFM 1 for batch 1
         weights_layout = WeightsLayout::os_iyx_osv16;
     } else if (fc_params.compressed && fc_params.inputs[0].GetDType() == Datatype::F16
         // ioyx => os_is_yx_osv32_isv2 is not supported yet
-        && (fc_params.weights.GetLayout() == WeightsLayout::oiyx || fc_params.weights.GetLayout() == WeightsLayout::os_is_yx_osv32_isv2)
-        && (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4)) {
+        && (fc_params.weights.GetLayout() == WeightsLayout::oiyx || fc_params.weights.GetLayout() == WeightsLayout::os_is_yx_osv32_isv2) &&
+               (fc_params.weights.GetDType() == WeightsType::INT4 || fc_params.weights.GetDType() == WeightsType::UINT4 )) {
         weights_layout = WeightsLayout::os_is_yx_osv32_isv2;
     } else if (tparams.tile_ofm * simd == 32) {
         weights_layout = WeightsLayout::os_iyx_osv32;

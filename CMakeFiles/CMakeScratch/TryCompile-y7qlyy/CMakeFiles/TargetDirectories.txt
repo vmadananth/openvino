@@ -1,0 +1,2 @@
+C:/VMworkspace/OpenVINO/openvino/CMakeFiles/CMakeScratch/TryCompile-y7qlyy/CMakeFiles/cmTC_c723a.dir
+C:/VMworkspace/OpenVINO/openvino/CMakeFiles/CMakeScratch/TryCompile-y7qlyy/CMakeFiles/ALL_BUILD.dir

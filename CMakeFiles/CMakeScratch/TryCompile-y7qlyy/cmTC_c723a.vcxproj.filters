@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\VMworkspace\OpenVINO\openvino\CMakeFiles\CMakeScratch\TryCompile-y7qlyy\CheckFunctionExists.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{6A35199A-464C-3514-B393-535A6652C9BE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
