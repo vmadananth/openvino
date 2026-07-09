@@ -204,6 +204,9 @@ ov::OutputVector ov::pass::GroupQueryAttentionDecomposition::decompose(
     }
     const auto is_static_input = K.get_partial_shape().is_static() && past_key.get_partial_shape().is_static();
 
+    ov::Output<ov::Node> present_k;
+    ov::Output<ov::Node> present_v;
+
     if (is_static_input) {
         // static design for GQA (KV cache is static max length, valid KVs are left align)
         // inputs are:
@@ -220,8 +223,21 @@ ov::OutputVector ov::pass::GroupQueryAttentionDecomposition::decompose(
             register_new_node<v4::Range>(zero_without_shape, curr_seqlen_scalar, one_without_shape, ov::element::i64);
         scatter_idx = register_new_node<v1::Add>(scatter_idx, past_seqlen);
         const auto scatter_axis = register_new_node(v0::Constant::create(ov::element::i64, ov::Shape{1}, {2}));
-        K = register_new_node<v3::ScatterUpdate>(past_key, scatter_idx, K, scatter_axis);
-        V = register_new_node<v3::ScatterUpdate>(past_value, scatter_idx, V, scatter_axis);
+        auto updateK = register_new_node<v3::ScatterUpdate>(past_key, scatter_idx, K, scatter_axis);
+        auto updateV = register_new_node<v3::ScatterUpdate>(past_value, scatter_idx, V, scatter_axis);
+
+        // present_k/v is the full buffer (returned as output for next iteration)
+        present_k = updateK;
+        present_v = updateV;
+
+        // For SDPA, trim K/V to only valid positions [0 : seqlens_k+1] using VariadicSplit
+        // splits = [0, seqlens_1d, -1] on axis 2 → takes the middle slice [0:seqlens_1d]
+        auto static_kv_slices = std::make_shared<ov::op::v0::Concat>(ov::NodeVector{zero, seqlens_1d, negone}, 0);
+        K = std::make_shared<ov::op::v1::VariadicSplit>(updateK, two_scalar, static_kv_slices)->outputs()[1];
+        V = std::make_shared<ov::op::v1::VariadicSplit>(updateV, two_scalar, static_kv_slices)->outputs()[1];
+
+        // Update concat_kv_len to reflect the trimmed length
+        concat_kv_len = seqlens_1d;
     } else if (inplacekv) {
 
         auto updateK = register_new_node<v3::ScatterUpdate>(past_key, q_pos_ids, K, two);
@@ -239,8 +255,12 @@ ov::OutputVector ov::pass::GroupQueryAttentionDecomposition::decompose(
         V = construct_kv_cache(past_value, V);
     }
 
-    ov::Output<ov::Node> present_k = K;
-    ov::Output<ov::Node> present_v = V;
+    // present_k/v: for static path, set inside the branch (full buffer).
+    // For dynamic/inplacekv/concat paths, present_k/v = K/V (which may be trimmed or concat'd).
+    if (!present_k.get_node()) {
+        present_k = K;
+        present_v = V;
+    }
 
     if (!concat_kv_len)
         concat_kv_len = get_dimensions(K.get_node_shared_ptr(), {2});
