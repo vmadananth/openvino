@@ -60,13 +60,21 @@ scatter_elements_update_inst::typed_primitive_inst(network& network, scatter_ele
 void scatter_elements_update_inst::on_execute() {
     update_output_memory();
     if (_outputs.size() > 0) {
-        const auto is_inplace_ = static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory());
-        if (is_inplace_ != is_inplace) {
-            is_inplace = is_inplace_;
+        if (is_inplace && !_network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+            GPU_DEBUG_TRACE_DETAIL << id() << " force update inplace: out[" << output_memory_ptr(0)->buffer_ptr() << "](allocated:" << _mem_allocated << ") in["
+                                   << input_memory_ptr(0)->buffer_ptr() << "] " << std::endl;
+            // expect previos output is reusing the input so need need to release.
+            _outputs = {_network.get_engine().reinterpret_buffer(input_memory(), _impl_params->get_output_layout())};
             set_arguments();
+        } else {
+            const auto is_inplace_ = static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory());
+            if (is_inplace_ != is_inplace) {
+                is_inplace = is_inplace_;
+                set_arguments();
+            }
+            GPU_DEBUG_TRACE_DETAIL << id() << " check inplace[" << is_inplace << "]: out[" << output_memory_ptr(0)->buffer_ptr() << "] in["
+                                   << input_memory_ptr(0)->buffer_ptr() << "] " << std::endl;
         }
-        GPU_DEBUG_TRACE_DETAIL << id() << " check inplace[" << is_inplace << "]: out[" << output_memory_ptr(0)->buffer_ptr() << "] in["
-                               << input_memory_ptr(0)->buffer_ptr() << "] " << std::endl;
     }
 }
 
