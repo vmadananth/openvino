@@ -28,8 +28,11 @@ struct FullyConnectedImplementationManager : public ImplementationManager {
         assert(node.is_type<fully_connected>());
         const auto& config = node.get_program().get_config();
         const auto& info = node.get_program().get_engine().get_device_info();
-        if (!info.supports_immad || info.arch == gpu_arch::unknown || !config.get_use_onednn())
+        if (!info.supports_immad || info.arch == gpu_arch::unknown || !config.get_use_onednn()) {
+            GPU_DEBUG_TRACE << node.id() << " : reject onednn: immad=" << info.supports_immad
+                            << " arch=" << static_cast<int>(info.arch) << " use_onednn=" << config.get_use_onednn() << std::endl;
             LOG_AND_RETURN_FALSE(node);
+        }
 
         const auto& fc_node = node.as<fully_connected>();
         const auto& in_layout = fc_node.get_input_layout(0);
@@ -39,17 +42,30 @@ struct FullyConnectedImplementationManager : public ImplementationManager {
         auto out_dt = out_layout.data_type;
         auto fc_prim = fc_node.get_primitive();
 
-        if (one_of(data_types::i64, {in0_dt, wei_dt}))
+        GPU_DEBUG_TRACE << node.id() << " : validate_impl in0_dt=" << static_cast<int>(in0_dt)
+                        << " wei_dt=" << static_cast<int>(wei_dt)
+                        << " out_dt=" << static_cast<int>(out_dt)
+                        << " compressed=" << fc_prim->compressed_weights
+                        << " in_fmt=" << in_layout.format.to_string()
+                        << " out_fmt=" << out_layout.format.to_string() << std::endl;
+
+        if (one_of(data_types::i64, {in0_dt, wei_dt})) {
+            GPU_DEBUG_TRACE << node.id() << " : reject onednn: i64 dtype" << std::endl;
             LOG_AND_RETURN_FALSE(node);
+        }
 
         if (!everyone_is(format::bfyx, in_layout.format, out_layout.format) &&
             !everyone_is(format::bfzyx, in_layout.format, out_layout.format) &&
             !everyone_is(format::bfwzyx, in_layout.format, out_layout.format) &&
-            !everyone_is(format::any, in_layout.format, out_layout.format))
+            !everyone_is(format::any, in_layout.format, out_layout.format)) {
+            GPU_DEBUG_TRACE << node.id() << " : reject onednn: format mismatch" << std::endl;
             LOG_AND_RETURN_FALSE(node);
+        }
 
-        if (!is_supported_pad(in_layout) || !is_supported_pad(out_layout))
+        if (!is_supported_pad(in_layout) || !is_supported_pad(out_layout)) {
+            GPU_DEBUG_TRACE << node.id() << " : reject onednn: unsupported padding" << std::endl;
             LOG_AND_RETURN_FALSE(node);
+        }
 
         bool f16f16_case = everyone_is(data_types::f16, in0_dt, wei_dt) && one_of(out_dt, {data_types::f16, data_types::f32, data_types::i8});
         bool bf16bf16_case = everyone_is(data_types::bf16, in0_dt, wei_dt) &&
@@ -60,22 +76,34 @@ struct FullyConnectedImplementationManager : public ImplementationManager {
                          one_of(out_dt, {data_types::f16, data_types::bf16, data_types::f32, data_types::i32, data_types::i8, data_types::u8});
         bool compressed_case = fc_prim->compressed_weights &&
                                one_of(in0_dt, {data_types::f16, data_types::bf16, data_types::f32, data_types::i8, data_types::u8}) &&
-                               one_of(wei_dt, {data_types::u8, data_types::i8, data_types::u4, data_types::i4}) &&
+                               one_of(wei_dt, {data_types::u8, data_types::i8, data_types::u4, data_types::i4, data_types::u2}) &&
                                one_of(out_dt, {data_types::f16, data_types::bf16, data_types::f32, data_types::u8, data_types::i8});
-        if (!f16f16_case && !bf16bf16_case && !f32f32_case && !u8s8_case && !compressed_case)
+
+        GPU_DEBUG_TRACE << node.id() << " : dtype cases: f16f16=" << f16f16_case
+                        << " bf16bf16=" << bf16bf16_case << " f32f32=" << f32f32_case
+                        << " u8s8=" << u8s8_case << " compressed=" << compressed_case << std::endl;
+
+        if (!f16f16_case && !bf16bf16_case && !f32f32_case && !u8s8_case && !compressed_case) {
+            GPU_DEBUG_TRACE << node.id() << " : reject onednn: no matching dtype case" << std::endl;
             LOG_AND_RETURN_FALSE(node);
+        }
 
         if (fc_prim->compressed_weights) {
             if (fc_prim->decompression_zero_point.is_valid()) {
                 auto decompression_zp_idx = fc_prim->bias.is_valid() ? 4 : 3;
                 auto decompression_zp_dt = fc_node.get_input_layout(decompression_zp_idx).data_type;
-                if ((wei_dt != ov::element::Type_t::i4 && wei_dt != ov::element::Type_t::u4 && wei_dt != ov::element::Type_t::u8) ||
+                GPU_DEBUG_TRACE << node.id() << " : ZP check: wei_dt=" << static_cast<int>(wei_dt)
+                                << " zp_dt=" << static_cast<int>(decompression_zp_dt) << std::endl;
+                if ((wei_dt != ov::element::Type_t::i4 && wei_dt != ov::element::Type_t::u4 && wei_dt != ov::element::Type_t::u8 && wei_dt != ov::element::Type_t::u2) ||
                     (decompression_zp_dt != ov::element::Type_t::i4 && decompression_zp_dt != ov::element::Type_t::u8 &&
-                     decompression_zp_dt != ov::element::Type_t::i8)) {
+                     decompression_zp_dt != ov::element::Type_t::i8 && decompression_zp_dt != ov::element::Type_t::u2)) {
+                    GPU_DEBUG_TRACE << node.id() << " : reject onednn: ZP dtype mismatch" << std::endl;
                     LOG_AND_RETURN_FALSE(node);
                 }
             }
         }
+
+        GPU_DEBUG_TRACE << node.id() << " : oneDNN ACCEPTED for FC (wei_dt=" << static_cast<int>(wei_dt) << ")" << std::endl;
 
         return true;
     }

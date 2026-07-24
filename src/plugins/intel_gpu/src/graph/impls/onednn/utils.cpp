@@ -142,6 +142,7 @@ dnnl::memory::data_type convert_data_type(cldnn::data_types dt) {
         case cldnn::data_types::i32: return dnnl::memory::data_type::s32;
         case cldnn::data_types::i4: return dnnl::memory::data_type::s4;
         case cldnn::data_types::u4: return dnnl::memory::data_type::u4;
+        case cldnn::data_types::u2: return dnnl::memory::data_type::u2;
         case cldnn::data_types::bf16: return dnnl::memory::data_type::bf16;
         default: throw std::invalid_argument("[clDNN] Unsupported conversion from cldnn to onednn type");
     }
@@ -253,6 +254,9 @@ int64_t get_offset(const cldnn::layout& l, dnnl::memory::desc&& desc) {
     }
 
     switch (desc.get_data_type()) {
+        case dnnl::memory::data_type::s2:
+        case dnnl::memory::data_type::u2:
+            return offset / 4;
         case dnnl::memory::data_type::s4:
         case dnnl::memory::data_type::u4:
             return offset / 2;
