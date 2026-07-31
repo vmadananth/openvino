@@ -153,6 +153,9 @@ KERNEL (reorder_data)(
     #elif defined UINT4_INPUT
         const uint uint4_idx = input_idx >> 1;
         OUTPUT_TYPE res = TO_OUTPUT_REORDER_TYPE(convert_as_uint4_float(input[uint4_idx], input_idx));
+    #elif defined UINT2_INPUT
+        const uint uint2_byte_idx = input_idx >> 2;
+        OUTPUT_TYPE res = TO_OUTPUT_REORDER_TYPE(convert_as_uint2_float(input[uint2_byte_idx], input_idx));
     #else
         CALC_TYPE res = TO_CALC_TYPE(input[input_idx]);
     #endif
@@ -231,6 +234,19 @@ KERNEL (reorder_data)(
         res = __TO_OUTPUT_REORDER_TYPE(res);
         FUSED_OPS;
         output[output_idx] = FUSED_OPS_RESULT;
+    #elif defined(UINT2_OUTPUT)
+        OUTPUT_TYPE val_char = __TO_OUTPUT_REORDER_TYPE(res);
+        int val_i32 = convert_int(val_char);
+        val_i32 = clamp(val_i32, 0, 3);
+        uint val_u32 = (uint)(val_i32 & 0x03);
+
+        volatile __global uint* output_u32 = (volatile __global uint*)output;
+        uint main_idx = output_idx / 16;
+        uint sub_idx  = output_idx % 16;
+        uint shift    = sub_idx * 2;
+
+        atomic_and(&output_u32[main_idx], ~(0x03u << shift));
+        atomic_or(&output_u32[main_idx], (val_u32 << shift));
     #elif defined(INT4_OUTPUT) || defined(UINT4_OUTPUT)
         OUTPUT_TYPE val_char = __TO_OUTPUT_REORDER_TYPE(res);
         int val_i32 = convert_int(val_char);
