@@ -30,7 +30,8 @@ protected:
                                                   const ov::Output<ov::Node>& external_bias,
                                                   const ov::Output<ov::Node>& bias_col_offset,
                                                   bool sliding_window_cache,
-                                                  float scale) override;
+                                                  float scale,
+                                                  bool is_static_input) override;
 };
 
 }  // namespace ov::intel_gpu

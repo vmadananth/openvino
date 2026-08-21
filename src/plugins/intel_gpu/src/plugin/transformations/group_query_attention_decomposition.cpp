@@ -47,8 +47,9 @@ std::shared_ptr<ov::Node> GroupQueryAttentionDecomposition::make_attention_mask(
     const ov::Output<ov::Node>& external_bias,
     const ov::Output<ov::Node>& bias_col_offset,
     bool sliding_window_cache,
-    float scale) {
-    if (!sliding_window_cache && !external_bias.get_node() && scale == 0.0f) {
+    float scale,
+    bool is_static_input) {
+    if (!sliding_window_cache && !external_bias.get_node() && scale == 0.0f && !is_static_input) {
         return nullptr;
     }
 
@@ -61,7 +62,8 @@ std::shared_ptr<ov::Node> GroupQueryAttentionDecomposition::make_attention_mask(
                                                                             external_bias,
                                                                             bias_col_offset,
                                                                             sliding_window_cache,
-                                                                            scale);
+                                                                            scale,
+                                                                            is_static_input);
 }
 
 }  // namespace ov::intel_gpu
