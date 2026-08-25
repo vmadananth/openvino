@@ -55,6 +55,9 @@ public:
     QuantizationAttribute get_quantization_attrs() const { return m_quantization_attrs; }
     size_t get_compression_inputs_num() const;
 
+    int64_t get_sliding_window_size() const { return m_sliding_window_size; }
+    void set_sliding_window_size(int64_t v) { m_sliding_window_size = v; }
+
     static std::vector<int64_t> default_order(size_t rank) {
         std::vector<int64_t> order(rank);
         std::iota(order.begin(), order.end(), 0);
@@ -71,6 +74,7 @@ protected:
 
     bool m_compressed = false;
     QuantizationAttribute m_quantization_attrs = {};
+    int64_t m_sliding_window_size = 0;
 };
 
 std::vector<ov::PartialShape> shape_infer(const SDPA* op,

@@ -139,6 +139,8 @@ static void CreateSDPAOp(ProgramBuilder& p, const std::shared_ptr<ov::op::intern
                                                          transpose_orders[1],
                                                          transpose_orders[2],
                                                          transpose_orders[3]);
+    sdpa_prim.sliding_window = op->get_sliding_window_size();
+
     if (scalar_scale) {
         sdpa_prim.scale_val = scalar_scale->cast_vector<float>()[0];
     }
