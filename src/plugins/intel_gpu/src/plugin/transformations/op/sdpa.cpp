@@ -59,8 +59,9 @@ SDPA::SDPA(const OutputVector& inputs,
 std::shared_ptr<ov::Node> SDPA::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     check_new_args_count(this, new_args);
 
+    std::shared_ptr<SDPA> new_node;
     if (m_compressed) {
-        return std::make_shared<SDPA>(new_args,
+        new_node = std::make_shared<SDPA>(new_args,
                                       m_is_causal,
                                       m_order_q,
                                       m_order_k,
@@ -69,9 +70,8 @@ std::shared_ptr<ov::Node> SDPA::clone_with_new_inputs(const ov::OutputVector& ne
                                       m_quantization_attrs,
                                       m_output_type,
                                       m_causal_mask_alignment);
-    }
-
-    return std::make_shared<SDPA>(new_args,
+    } else {
+        new_node = std::make_shared<SDPA>(new_args,
                                   m_is_causal,
                                   m_order_q,
                                   m_order_k,
@@ -79,6 +79,9 @@ std::shared_ptr<ov::Node> SDPA::clone_with_new_inputs(const ov::OutputVector& ne
                                   m_order_out,
                                   m_output_type,
                                   m_causal_mask_alignment);
+    }
+    new_node->set_sliding_window_size(m_sliding_window_size);
+    return new_node;
 }
 
 void SDPA::validate_and_infer_types() {
@@ -117,6 +120,7 @@ bool SDPA::visit_attributes(ov::AttributeVisitor &visitor) {
     bool causal_lower_right = m_causal_mask_alignment == CausalMaskAlignment::LOWER_RIGHT;
     visitor.on_attribute("causal_lower_right", causal_lower_right);
     m_causal_mask_alignment = causal_lower_right ? CausalMaskAlignment::LOWER_RIGHT : CausalMaskAlignment::UPPER_LEFT;
+    visitor.on_attribute("sliding_window_size", m_sliding_window_size);
     return true;
 }
 
