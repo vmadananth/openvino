@@ -23,7 +23,24 @@ public:
     GroupQueryAttentionDecomposition();
 
 protected:
+    struct KVCacheOutputs {
+        ov::Output<ov::Node> present_key;
+        ov::Output<ov::Node> present_value;
+        ov::Output<ov::Node> sdpa_key;
+        ov::Output<ov::Node> sdpa_value;
+        ov::Output<ov::Node> mask_past_seqlen;
+        ov::Output<ov::Node> bias_col_offset;
+    };
+
     ov::OutputVector decompose(std::shared_ptr<ov::op::internal::GroupQueryAttention> node);
+    virtual KVCacheOutputs construct_kvcache(const std::shared_ptr<ov::op::internal::GroupQueryAttention>& node,
+                                             const ov::Output<ov::Node>& past_key,
+                                             const ov::Output<ov::Node>& past_value,
+                                             const ov::Output<ov::Node>& key,
+                                             const ov::Output<ov::Node>& value,
+                                             const ov::Output<ov::Node>& seqlens_1d,
+                                             const ov::Output<ov::Node>& past_seqlen,
+                                             const ov::Output<ov::Node>& current_seqlen_scalar);
     virtual std::shared_ptr<ov::Node> make_sdpa(const ov::Output<ov::Node>& query,
                                                 const ov::Output<ov::Node>& key,
                                                 const ov::Output<ov::Node>& value,
