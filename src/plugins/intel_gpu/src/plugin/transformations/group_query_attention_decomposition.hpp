@@ -29,7 +29,8 @@ protected:
                                         const ov::Output<ov::Node>& mask,
                                         const ov::Output<ov::Node>& scale,
                                         const ov::Output<ov::Node>& sink,
-                                        bool is_causal) override;
+                                        bool is_causal,
+                                        int64_t local_window_size = -1) override;
     std::shared_ptr<ov::Node> make_attention_mask(const ov::Output<ov::Node>& curr_seqlen_scalar,
                                                   const ov::Output<ov::Node>& kv_len_scalar,
                                                   const ov::Output<ov::Node>& kv_len_1d,
@@ -43,7 +44,6 @@ protected:
                                                   float scale,
                                                   bool has_sink) override;
 
-    int64_t m_local_window_size = -1;
     bool m_transpose_v = false;
     bool m_use_compressed_sdpa = false;
     ov::Output<ov::Node> m_compressed_key;
