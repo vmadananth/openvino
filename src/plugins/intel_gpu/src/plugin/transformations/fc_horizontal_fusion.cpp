@@ -55,6 +55,12 @@ FullyConnectedHorizontalFusion::FullyConnectedHorizontalFusion(bool fuse_mlp_swi
         };
 
         const auto& fc = ov::as_type_ptr<op::FullyConnectedCompressed>(output.get_node_shared_ptr());
+        // Skip u2-compressed FCs: fusing them requires ConstantFolding to fold a
+        // Concat of u2 weight constants, which corrupts memory (ov::reference::concat
+        // does not handle sub-byte-packed types correctly).
+        if (fc->get_input_element_type(1) == ov::element::u2) {
+            return false;
+        }
         const auto& input = fc->get_input_node_shared_ptr(0);
         if (!fc->get_input_partial_shape(0).is_dynamic()) {
             return false;

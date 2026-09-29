@@ -53,7 +53,7 @@ protected:
         if (prim->compressed_weights) {
             const auto weights_dt = instance.get_input_layout(1).data_type;
             auto weight_bitwidth = ov::element::Type(weights_dt).bitwidth();
-            OPENVINO_ASSERT(weight_bitwidth == 8 || weight_bitwidth == 4, "[GPU] oneDNN supports only 4bit/8bit compressed weights");
+            OPENVINO_ASSERT(weight_bitwidth == 8 || weight_bitwidth == 4 || weight_bitwidth == 2, "[GPU] oneDNN supports only 2bit/4bit/8bit compressed weights");
             int idx = prim->bias.is_valid() ? 3 : 2;
 
             if (prim->decompression_scale.is_valid()) {
@@ -66,8 +66,32 @@ protected:
             if (prim->decompression_zero_point.is_valid()) {
                 auto decompression_zp_idx = idx++;
                 auto zp_mem = instance.dep_memory_ptr(decompression_zp_idx);
-                dnnl::memory::desc desc = onednn::layout_to_memory_desc_flatten(zp_mem->get_layout(), dnnl::memory::format_tag::a);
-                args.insert({DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, zp_mem->get_onednn_memory(desc)});
+                const auto& zp_layout = zp_mem->get_layout();
+                const bool zp_is_float = zp_layout.data_type == data_types::f16 || zp_layout.data_type == data_types::f32;
+                if (zp_is_float && zp_layout.count() == 1) {
+                    // oneDNN's zero-points API has no floating-point type; read the
+                    // compile-time-constant scalar value once and rebind it as u8.
+                    auto& stream = instance.get_network().get_stream();
+                    float zp_value = 0.0f;
+                    if (zp_layout.data_type == data_types::f16) {
+                        mem_lock<ov::float16, mem_lock_type::read> src_lock(zp_mem, stream);
+                        zp_value = static_cast<float>(src_lock.data()[0]);
+                    } else {
+                        mem_lock<float, mem_lock_type::read> src_lock(zp_mem, stream);
+                        zp_value = src_lock.data()[0];
+                    }
+                    auto converted_layout = cldnn::layout(ov::PartialShape{1}, data_types::u8, format::bfyx);
+                    auto converted_mem = instance.get_network().get_engine().allocate_memory(converted_layout);
+                    {
+                        mem_lock<uint8_t, mem_lock_type::write> dst_lock(converted_mem, stream);
+                        dst_lock.data()[0] = static_cast<uint8_t>(std::lround(zp_value));
+                    }
+                    dnnl::memory::desc desc = onednn::layout_to_memory_desc_flatten(converted_layout, dnnl::memory::format_tag::a);
+                    args.insert({DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, converted_mem->get_onednn_memory(desc)});
+                } else {
+                    dnnl::memory::desc desc = onednn::layout_to_memory_desc_flatten(zp_layout, dnnl::memory::format_tag::a);
+                    args.insert({DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_WEIGHTS, zp_mem->get_onednn_memory(desc)});
+                }
             }
 
             const auto input_dt = instance.get_input_layout(0).data_type;
@@ -164,7 +188,8 @@ protected:
         dnnl::memory::desc weights_md;
         if (weights_layout.data_padding
             && format::is_default_format(weights_layout.format)
-            && (weights_layout.data_type == data_types::i4 || weights_layout.data_type == data_types::u4)) {
+            && (weights_layout.data_type == data_types::i4 || weights_layout.data_type == data_types::u4
+                || weights_layout.data_type == data_types::u2)) {
             weights_md = onednn::layout_to_memory_desc_strides(weights_layout, weights_fmt);
         } else {
             weights_md = onednn::layout_to_memory_desc(weights_layout, weights_fmt);
@@ -401,7 +426,11 @@ public:
             if (prim->decompression_zero_point.is_valid()) {
                 auto decompression_zp_idx = ++idx;
                 auto dzp_layout = arg.get_dependency(decompression_zp_idx).get_output_layout();
-                dzp_data_type = convert_data_type(dzp_layout.data_type);
+                // oneDNN's zero-points API has no floating-point type; a float scalar zero
+                // point (e.g. Bonsai's ternary zero point of 1) is rebound as u8 at execution.
+                const bool dzp_is_float = dzp_layout.data_type == data_types::f16 || dzp_layout.data_type == data_types::f32;
+                dzp_data_type = (dzp_is_float && dzp_layout.count() == 1) ? dnnl::memory::data_type::u8
+                                                                          : convert_data_type(dzp_layout.data_type);
 
                 if (dzp_layout.count() == 1) {
                     attr->set_zero_points(DNNL_ARG_WEIGHTS, COMMON, dnnl::memory::dims{}, dzp_data_type);
