@@ -113,7 +113,7 @@ std::shared_ptr<ov::Model> make_gqa_model(const GQAConfig& cfg) {
     return std::make_shared<ov::Model>(results, parameters);
 }
 
-std::shared_ptr<ov::intel_gpu::op::SDPA> decompose_and_get_sdpa(const GQAConfig& cfg) {
+std::shared_ptr<ov::intel_gpu::op::SDPA> decompose_and_get_sdpa(const GQAConfig& cfg, std::shared_ptr<ov::Model>* out_model = nullptr) {
     auto model = make_gqa_model(cfg);
     ov::pass::Manager manager;
     manager.register_pass<ov::intel_gpu::GroupQueryAttentionDecomposition>();
@@ -125,6 +125,9 @@ std::shared_ptr<ov::intel_gpu::op::SDPA> decompose_and_get_sdpa(const GQAConfig&
         if (auto sdpa = ov::as_type_ptr<ov::intel_gpu::op::SDPA>(node)) {
             result = sdpa;
         }
+    }
+    if (out_model) {
+        *out_model = model;
     }
     return result;
 }
@@ -177,7 +180,8 @@ TEST(GroupQueryAttentionDecompositionTest, quantized_kv_uses_compressed_sdpa_bef
     cfg.kv_quant = QuantType::PER_TENSOR;
     cfg.out_quant = QuantType::PER_TENSOR;
 
-    const auto sdpa = decompose_and_get_sdpa(cfg);
+    std::shared_ptr<ov::Model> model;
+    const auto sdpa = decompose_and_get_sdpa(cfg, &model);
 
     ASSERT_NE(sdpa, nullptr);
     EXPECT_TRUE(sdpa->get_kv_compressed());
@@ -187,7 +191,7 @@ TEST(GroupQueryAttentionDecompositionTest, quantized_kv_uses_compressed_sdpa_bef
     EXPECT_EQ(sdpa->get_quantization_attrs().quantization_dt, ov::element::i8);
     EXPECT_EQ(sdpa->get_quantization_attrs().scale_dt, ov::element::f16);
 
-    for (const auto& node : sdpa->get_function()->get_ordered_ops()) {
+    for (const auto& node : model->get_ordered_ops()) {
         const auto convert = ov::as_type_ptr<ov::op::v0::Convert>(node);
         if (convert) {
             EXPECT_FALSE(ov::is_type<ov::intel_gpu::op::StatelessKV>(convert->input_value(0).get_node_shared_ptr()));

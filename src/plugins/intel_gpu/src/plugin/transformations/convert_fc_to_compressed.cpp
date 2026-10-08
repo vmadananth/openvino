@@ -23,11 +23,12 @@
 #include "openvino/pass/pattern/op/pattern.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "transformations/utils/utils.hpp"
+#include "intel_gpu/runtime/debug_configuration.hpp"
 
 namespace ov::intel_gpu {
 using namespace ov::pass::pattern;
 
-ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyConnectedCompressed() {
+ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyConnectedCompressed(bool keep_u2_group_major) {
     auto data_m = any_input();
     auto bias_m = any_input();
 
@@ -74,6 +75,28 @@ ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyCon
         if (weight_ptr->get_element_type() == ov::element::u8 || weight_ptr->get_element_type() == ov::element::i8) {
             weight_u8 = true;
         }
+
+        // Route A (CM u2 group-major): the weights are a native 3-D group-major [KG, N, GS] layout (GS = 64,
+        // the kernel's quantization group size) that the model presents n-major via a Transpose. On a device
+        // that runs the CM u2 kernel, keep the native layout -- skip folding the transpose onto the weights /
+        // scales / zero points -- so the FC reads it directly (WLAYOUT 0, no reorder). The FC stays
+        // weights_transposed (logical [N, K]); its 3-D weight shape is collapsed to [N, K] by
+        // fully_connected_inst::calc_output_layouts for shape inference. Only when N % 32 == 0, the kernel's
+        // column-tiling requirement -- otherwise keep the n-major fold so the reference fallback still works.
+        // Gated on the raw weight constant's shape (is_weight_3d reflects the FC's already-flattened weight
+        // input, not the group-major constant, so it is not used here).
+        const auto& w_ps = weight_ptr->get_output_partial_shape(0);
+        const bool keep_group_major = keep_u2_group_major && has_transpose &&
+                                      weight_ptr->get_element_type() == ov::element::u2 &&
+                                      w_ps.rank().is_static() && w_ps.size() == 3 &&
+                                      w_ps[1].is_static() && w_ps[2].is_static() &&
+                                      w_ps[2].get_length() == 64 && w_ps[1].get_length() % 32 == 0;
+        GPU_DEBUG_TRACE << "[CM u2 gmajor] ConvertFCToCompressed " << fc->get_friendly_name()
+                        << ": keep_u2_group_major=" << keep_u2_group_major << " has_transpose=" << has_transpose
+                        << " is_weight_3d=" << is_weight_3d << " weight_et=" << weight_ptr->get_element_type()
+                        << " weight_shape=" << weight_ptr->get_output_partial_shape(0)
+                        << " => keep_group_major=" << keep_group_major
+                        << (keep_group_major ? " (transpose fold SKIPPED, feeding native group-major)" : "") << std::endl;
 
         auto reshape_decompression_input = [has_transpose, grouped, is_weight_3d, &result_nodes](std::shared_ptr<ov::Node> node) -> std::shared_ptr<ov::Node> {
             auto constant = ov::as_type_ptr<ov::op::v0::Constant>(node);
@@ -155,7 +178,12 @@ ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyCon
         std::shared_ptr<ov::Node> fc_input_zp = optional_zero_point;
         std::shared_ptr<ov::Node> fc_input_bias = pattern_map.at(bias_m).get_node_shared_ptr();
 
-        if (fc_input_b->get_output_partial_shape(0).size() != fc_input_scale->get_shape().size()) {
+        if (keep_group_major) {
+            // Feed the native 3-D group-major [KG, N, GS] weights (and [KG, N] scale / zp) straight through.
+            fc_input_b = weight_ptr;
+        }
+
+        if (!keep_group_major && fc_input_b->get_output_partial_shape(0).size() != fc_input_scale->get_shape().size()) {
             OPENVINO_ASSERT(!pattern_map.count(weights_const_m));
             ov::Shape weight_shape_final(fc_input_scale->get_shape().size(), 1);
             for (size_t i = weight_shape.size() - 1, idx = fc_input_scale->get_shape().size() - 1;; --i) {
@@ -176,7 +204,7 @@ ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyCon
             result_nodes.push_back(fc_input_b);
         }
 
-        if (has_transpose) {
+        if (has_transpose && !keep_group_major) {
             const auto& transpose = pattern_map
                                         .at(has_transpose_before_reshape ? transpose_before_reshape_input_m : transpose_after_reshape_m)
                                         .get_node_shared_ptr();
@@ -206,7 +234,7 @@ ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyCon
             }
         }
 
-        if (has_transpose_before_reshape) {
+        if (has_transpose_before_reshape && !keep_group_major) {
             const auto& reshape = pattern_map.at(transpose_before_reshape_m).get_node_shared_ptr();
             const auto& reshape_const_node = pattern_map.at(transpose_const_m);
             fc_input_b = reshape->clone_with_new_inputs({fc_input_b->output(0), reshape_const_node});
