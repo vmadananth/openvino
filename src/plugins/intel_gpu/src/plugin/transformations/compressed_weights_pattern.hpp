@@ -65,17 +65,18 @@ using ov::pass::operator|;
         auto transpose_m = transpose_after_reshape_m | transpose_before_reshape_m;\
 \
         /* GNK weights [G, N, gs]: Transpose{1, 0, 2} then Reshape to [N, G * gs] (see cm::woq_u2_accepts_gnk). */\
-        auto gnk_order_m = wrap_type<ov::op::v0::Constant>([](const ov::Output<ov::Node>& output) {\
+        auto is_gnk_order = [](const ov::Output<ov::Node>& output) {\
             const auto order = ov::as_type_ptr<ov::op::v0::Constant>(output.get_node_shared_ptr());\
             return order && order->cast_vector<int64_t>() == std::vector<int64_t>{1, 0, 2};\
-        });\
+        };\
+        auto is_gnk_reshape = [](const ov::Output<ov::Node>& output) {\
+            const auto& in_ps = output.get_node()->get_input_partial_shape(0);\
+            const auto& out_ps = output.get_node()->get_output_partial_shape(0);\
+            return in_ps.is_static() && out_ps.is_static() && in_ps.size() == 3 && out_ps.size() == 2 &&\
+                   out_ps[0] == in_ps[0] && out_ps[1].get_length() == in_ps[1].get_length() * in_ps[2].get_length();\
+        };\
+        auto gnk_order_m = wrap_type<ov::op::v0::Constant>(is_gnk_order);\
         auto gnk_transpose_m = wrap_type<ov::op::v1::Transpose>({mul_m, gnk_order_m});\
-        auto gnk_transpose_reshape_m = wrap_type<ov::op::v1::Reshape>({gnk_transpose_m, wrap_type<ov::op::v0::Constant>()},\
-            [](const ov::Output<ov::Node>& output) {\
-                const auto& in_ps = output.get_node()->get_input_partial_shape(0);\
-                const auto& out_ps = output.get_node()->get_output_partial_shape(0);\
-                return in_ps.is_static() && out_ps.is_static() && in_ps.size() == 3 && out_ps.size() == 2 &&\
-                       out_ps[0] == in_ps[0] && out_ps[1].get_length() == in_ps[1].get_length() * in_ps[2].get_length();\
-            });\
+        auto gnk_transpose_reshape_m = wrap_type<ov::op::v1::Reshape>({gnk_transpose_m, wrap_type<ov::op::v0::Constant>()}, is_gnk_reshape);\
 \
         auto compressed_weights_input_m = mul_m | convert_reshape_m | mul2_m | transpose_m | gnk_transpose_reshape_m;

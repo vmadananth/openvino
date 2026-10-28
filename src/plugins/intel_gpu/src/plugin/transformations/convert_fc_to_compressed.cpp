@@ -127,52 +127,54 @@ ConvertFullyConnectedToFullyConnectedCompressed::ConvertFullyConnectedToFullyCon
             return result;
         };
 
-        // Native GNK u2 weights for the CM kernel: [G, N, gs] as is, scale / zp [G, N]. is_decompression_multiply kept
-        // this chain unfolded only for constant weights the same check accepted.
-        if (pattern_map.count(gnk_transpose_reshape_m)) {
-            if (!weights_are_constant || pattern_map.count(weights_reshape_m)) {
-                return false;
-            }
+        // Native GNK u2 weights for the CM kernel: [G, N, gs] as is, scale / zp [G, N]. The weights may be a constant
+        // or a Parameter; either is passed through untouched.
+        // Or takes the first matching alternative and transpose_before_reshape_m accepts any Transpose order, so a
+        // {1, 0, 2} chain normally arrives through it rather than through gnk_transpose_reshape_m.
+        const bool gnk_via_gnk_pattern = pattern_map.count(gnk_transpose_reshape_m) != 0u;
+        const bool gnk_chain = gnk_via_gnk_pattern || (has_transpose_before_reshape && is_gnk_order(pattern_map.at(transpose_const_m)) &&
+                                                       is_gnk_reshape(pattern_map.at(transpose_before_reshape_m)));
+        if (gnk_chain) {
             const bool has_zp = pattern_map.count(subtract_m) > 0;
             const auto scale_const = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(mul_const_m).get_node_shared_ptr());
             const auto zp_const = has_zp ? ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(sub_const_m).get_node_shared_ptr()) : nullptr;
-            OPENVINO_ASSERT(scale_const && (!has_zp || zp_const));
-            const bool accepted = cm::woq_u2_accepts_gnk(m_device_info,
-                                                         m_cm_jit_supported,
-                                                         weight_ptr->get_element_type(),
-                                                         weight_ptr->get_output_partial_shape(0),
-                                                         scale_const->get_element_type(),
-                                                         scale_const->get_output_partial_shape(0),
-                                                         has_zp,
-                                                         has_zp ? zp_const->get_element_type() : ov::element::dynamic,
-                                                         has_zp ? zp_const->get_output_partial_shape(0) : ov::PartialShape{});
-            OPENVINO_ASSERT(accepted,
-                            "[GPU] ",
-                            fc->get_friendly_name(),
-                            ": GNK u2 weights were kept unfolded for the CM kernel, but woq_u2_accepts_gnk rejects them here");
-            OPENVINO_ASSERT(fc->get_transpose_b(), "[GPU] ", fc->get_friendly_name(), ": GNK u2 weights expect transpose_b = true");
-
-            const auto& w_shape = weight_ptr->get_output_shape(0);
-            auto to_gn = [&](const std::shared_ptr<ov::op::v0::Constant>& constant) {
-                auto reshaped = std::make_shared<ov::op::v0::Constant>(*constant, ov::Shape{w_shape[0], w_shape[1]});
-                ov::copy_weightless_cache_attr(constant, reshaped);
-                return reshaped;
-            };
-            const auto gnk_zp = convert_zp_const(to_gn(zp_const));
-            auto gnk_fc = std::make_shared<op::FullyConnectedCompressed>(fc->input_value(0),
-                                                                         weight_ptr,
-                                                                         pattern_map.at(bias_m),
-                                                                         to_gn(scale_const),
-                                                                         gnk_zp,
-                                                                         fc->get_output_type(),
-                                                                         true,
-                                                                         false,
-                                                                         false,
-                                                                         op::FcWeightsLayout::GNK);
-            gnk_fc->set_friendly_name(fc->get_friendly_name());
-            ov::copy_runtime_info(m.get_matched_nodes(), ov::NodeVector{gnk_zp, gnk_fc});
-            ov::replace_node(fc, gnk_fc);
-            return true;
+            const bool gnk_accepted = fc->get_transpose_b() && !pattern_map.count(weights_reshape_m) && scale_const && zp_const &&
+                                      cm::woq_u2_accepts_gnk(m_device_info,
+                                                             m_cm_jit_supported,
+                                                             weight_ptr->get_element_type(),
+                                                             weight_ptr->get_output_partial_shape(0),
+                                                             scale_const->get_element_type(),
+                                                             scale_const->get_output_partial_shape(0),
+                                                             has_zp,
+                                                             zp_const->get_element_type(),
+                                                             zp_const->get_output_partial_shape(0));
+            if (gnk_accepted) {
+                const auto& w_shape = weight_ptr->get_output_shape(0);
+                auto to_gn = [&](const std::shared_ptr<ov::op::v0::Constant>& constant) {
+                    auto reshaped = std::make_shared<ov::op::v0::Constant>(*constant, ov::Shape{w_shape[0], w_shape[1]});
+                    ov::copy_weightless_cache_attr(constant, reshaped);
+                    return reshaped;
+                };
+                const auto gnk_zp = convert_zp_const(to_gn(zp_const));
+                auto gnk_fc = std::make_shared<op::FullyConnectedCompressed>(fc->input_value(0),
+                                                                             weight_ptr,
+                                                                             pattern_map.at(bias_m),
+                                                                             to_gn(scale_const),
+                                                                             gnk_zp,
+                                                                             fc->get_output_type(),
+                                                                             true,
+                                                                             false,
+                                                                             false,
+                                                                             op::FcWeightsLayout::GNK);
+                gnk_fc->set_friendly_name(fc->get_friendly_name());
+                ov::copy_runtime_info(m.get_matched_nodes(), ov::NodeVector{gnk_zp, gnk_fc});
+                ov::replace_node(fc, gnk_fc);
+                return true;
+            }
+            // The generic path below needs the transpose_before_reshape_m entries.
+            if (gnk_via_gnk_pattern) {
+                return false;
+            }
         }
 
         const ov::Output<Node>& fc_input_a = fc->input(0).get_source_output();
