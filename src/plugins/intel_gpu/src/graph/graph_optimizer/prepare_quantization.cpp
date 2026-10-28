@@ -555,6 +555,8 @@ std::vector<program_node*> cldnn::reorder_fc_decompression_params_if_needed(full
     if (fc_prim->weights_layout == ov::intel_gpu::op::FcWeightsLayout::GNK)
         return new_reorders;
 
+    auto weights_shape = fc_node.get_input_layout(1).get_partial_shape();
+
     auto reorder_bfyx = [&](size_t dep_id, cldnn::format format) {
         auto& dep = fc_node.get_dependency(dep_id);
         auto target_layout = dep.get_output_layout();
@@ -576,6 +578,14 @@ std::vector<program_node*> cldnn::reorder_fc_decompression_params_if_needed(full
             return false;
         }
 
+        if (weight_rank == 2 && dep_rank == 2) {
+            const auto output_features_idx = fc_prim->weights_transposed ? 0 : 1;
+            const auto output_features = weights_shape[output_features_idx];
+            if (dep_pshape[1] == output_features && dep_pshape[0] != output_features) {
+                return false;
+            }
+        }
+
         auto groups_idx = dep_rank == 1 ? 0 : weight_rank - 1;
         auto groups_count = dep_pshape[groups_idx].get_length();
         return groups_count > 1;
@@ -583,7 +593,6 @@ std::vector<program_node*> cldnn::reorder_fc_decompression_params_if_needed(full
     // possible cases
     // legacy [K, N, 1, 1] => crop padded dims
     // new shape [1, K, N] => preserve
-    auto weights_shape = fc_node.get_input_layout(1).get_partial_shape();
     auto weight_rank = weights_shape.size();
     if (weight_rank >= 3 && weights_shape[0] != 1) {
         // legacy case
@@ -596,7 +605,7 @@ std::vector<program_node*> cldnn::reorder_fc_decompression_params_if_needed(full
 
     cldnn::format format = format::fbyx;
     if (weight_rank == 3)
-      format = format::byfx;
+        format = format::byfx;
 
     auto decompression_scale_idx = !fc_node.bias_term() ? 2 : 3;
     // OCL/oneDNN kernel requires decompression scale/zp in layout where scale_ofm dimension is innermost
